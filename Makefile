@@ -14,14 +14,15 @@ KUBECTL=minikube kubectl --
 all: image
 
 # Look for a 'registry' service on the cluster unless given one as an argument
-REGISTRY?=$(shell $(KUBECTL) get --ignore-not-found -n kube-system service \
-	registry -o jsonpath="{.spec.clusterIP}{':'}{.spec.ports[0].port}")
+REGISTRY_SCHEME?='http'
+REGISTRY?=$(shell $(KUBECTL) get --ignore-not-found -n kube-system service registry\
+	-o jsonpath="{.spec.clusterIP}{':'}{.spec.ports[?(@.name == $(REGISTRY_SCHEME))].port}")
 registry:
 ifeq ($(REGISTRY),)
 	@echo enabling the Minikube registry addon
 	@minikube addons enable registry && sleep 6
-REGISTRY=$(shell $(KUBECTL) get -n kube-system service registry -o \
-			jsonpath="{.spec.clusterIP}{':'}{.spec.ports[0].port}")
+REGISTRY=$(shell $(KUBECTL) get -n kube-system service registry -o\
+			jsonpath="{.spec.clusterIP}{':'}{.spec.ports[?(@.name == $(REGISTRY_SCHEME))].port}")
 endif
 
 # Build, tag and push the tss-injector service 📦
