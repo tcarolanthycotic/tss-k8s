@@ -5,6 +5,7 @@ program=$(basename $0)
 DEFAULT_NAMESPACE="default"
 DEFAULT_DIRECTORY=.
 DEFAULT_BITS=2048
+DEFAULT_KUBECTL=`which kubectl 2> /dev/null`
 
 usage() {
   cat<<EOF
@@ -21,11 +22,13 @@ Usage: ${program} -n NAME [OPTIONS]...
                 domain of the FQDN that is the subject of the certificate.
                 the default is '${DEFAULT_NAMESPACE}'
         -b, -bits, --bits=BITS
-                the RSA key size in bits; default is ${DEFAULT_BITS}
+                The RSA key size in bits; default is ${DEFAULT_BITS}
+	-k, -kubectl, --kubectl=KUBECTL_COMMAND
+		The command to execute in place of kubectl; default is ${DEFAULT_KUBECTL}
 EOF
 }
 
-options=$(getopt -l "bits:,directory:,name:,namespace:" -o "b:d:n:N:" -a -n "${program}" -- "$@")
+options=$(getopt -l "bits:,directory:,kubectl:,name:,namespace:" -o "b:d:k:n:N:" -a -n "${program}" -- "$@")
 
 test $? -ne 0 && usage && exit 1
 
@@ -49,6 +52,10 @@ do
   --directory|-d)
     shift
     directory="${1}"
+    ;;
+  --kubectl|-k)
+    shift
+    kubectl="${1}"
     ;;
   --)
     shift
@@ -74,13 +81,17 @@ test -z "${namespace}" && namespace=${DEFAULT_NAMESPACE}
 
 fqdn="${name}.${namespace}.svc"
 
-kubectl=$(which kubectl)
-
-if test $? -ne 0
+if test -n "${kubectl}"
 then
-  echo "${program}: unable to locate kubectl executable; exiting"
-  exit 1
+  eval $kubectl version > /dev/null
+  if test $? -ne 0
+  then
+    echo "${program}: '$(kubect) version' returns an error; exiting"
+    exit 1
+  fi 
 fi
+
+test -z "${kubectl}" && kubectl="${DEFAULT_KUBECTL}"
 
 openssl=$(which openssl)
 
@@ -95,7 +106,7 @@ cd "${directory}"
 "${openssl}" genrsa -out "${name}.key" ${bits} 2> /dev/null
 
 csr_conf=`mktemp -t tss-csr.XXXXXX`
-trap 'rm "${csr_conf}"; exit' SIGINT SIGTERM EXIT
+trap 'rm "${csr_conf}"; exit' INT TERM EXIT
 
 cat >"${csr_conf}"<<EOF
 [req]
@@ -113,11 +124,11 @@ DNS.2 = ${name}.${namespace}
 DNS.3 = ${fqdn}
 DNS.4 = ${fqdn}.cluster.local
 EOF
-"${openssl}" req -new -key "${name}.key" -subj "/CN=${fqdn}" \
+$openssl req -new -key "${name}.key" -subj "/CN=${fqdn}" \
 	-out "${name}.csr" -config "${csr_conf}" > /dev/null
 
-"${kubectl}" delete csr --ignore-not-found=true "${fqdn}" > /dev/null
-"${kubectl}" create -f - <<EOF > /dev/null
+$kubectl delete csr --ignore-not-found=true "${fqdn}" > /dev/null
+$kubectl create -f - <<EOF > /dev/null
 apiVersion: certificates.k8s.io/v1beta1
 kind: CertificateSigningRequest
 metadata:
@@ -134,7 +145,7 @@ EOF
 
 retries=0
 while :; do
-  "${kubectl}" get csr "${fqdn}" > /dev/null
+  $kubectl get csr "${fqdn}" > /dev/null
   test "$?" -eq 0 && break
   if test $retries -gt 9
   then
@@ -144,11 +155,11 @@ while :; do
   sleep 1
 done
 
-"${kubectl}" certificate approve "${fqdn}" > /dev/null
+$kubectl certificate approve "${fqdn}" > /dev/null
 
 retries=0
 while :; do
-  cert=$("${kubectl}" get csr ${fqdn} -o jsonpath='{.status.certificate}')
+  cert=$($kubectl get csr $fqdn -o jsonpath='{.status.certificate}')
   test -n "${cert}" && break
   if test $retries -gt 9
   then
