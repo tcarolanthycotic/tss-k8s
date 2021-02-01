@@ -10,19 +10,34 @@ DOCKER=docker
 
 # Use the Minikube built-in kubectl by default
 KUBECTL=minikube kubectl --
+REGISTRY_ENABLE=minikube addons enable registry
+REGISTRY_SCHEME?=http
+REGISTRY_NAMESPACE?=kube-system
+REGISTRY_PORT?=port
+IMAGE_PULL_REGISTRY_PORT?=$(REGISTRY_PORT)
+CA_CRT?=${HOME}/.minikube/ca.crt
+
+# Microk8s
+#KUBECTL=/snap/bin/microk8s.kubectl
+#REGISTRY_ENABLE=microk8s enable registry
+#REGISTRY_NAMESPACE?=container-registry
+#REGISTRY_PORT?=port
+#REGISTRY_SCHEME?=registry
+#IMAGE_PULL_REGISTRY_PORT?=nodePort
+#CA_CRT?=/var/snap/microk8s/current/certs/ca.crt
 
 all: image
 
-# Look for a 'registry' service on the cluster unless given one as an argument
-REGISTRY_SCHEME?='http'
-REGISTRY?=$(shell $(KUBECTL) get --ignore-not-found -n kube-system service registry\
-	-o jsonpath="{.spec.clusterIP}{':'}{.spec.ports[?(@.name == $(REGISTRY_SCHEME))].port}")
 registry:
-ifeq ($(REGISTRY),)
-	@echo enabling the Minikube registry addon
-	@minikube addons enable registry && sleep 6
-REGISTRY=$(shell $(KUBECTL) get -n kube-system service registry -o\
-			jsonpath="{.spec.clusterIP}{':'}{.spec.ports[?(@.name == $(REGISTRY_SCHEME))].port}")
+	@$(REGISTRY_ENABLE)
+REGISTRY=$(shell $(KUBECTL) get -n $(REGISTRY_NAMESPACE) service registry\
+	-o jsonpath="{.spec.clusterIP}{':'}{.spec.ports[?(@.name == '$(REGISTRY_SCHEME)')].$(REGISTRY_PORT)}")
+
+ifneq ($(IMAGE_PULL_REGISTRY_PORT),$(REGISTRY_PORT))
+IMAGE_PULL_REGISTRY=$(shell $(KUBECTL) get -n $(REGISTRY_NAMESPACE) service registry -o\
+  jsonpath="{'localhost:'}{.spec.ports[?(@.name == '$(REGISTRY_SCHEME)')].$(IMAGE_PULL_REGISTRY_PORT)}")
+else
+IMAGE_PULL_REGISTRY=$(REGISTRY)
 endif
 
 # Build, tag and push the tss-injector service 📦
@@ -33,10 +48,7 @@ image: registry
 
 ### The remainder builds and deploys a test injector-svc ☑️
 
-# The CA certificate of the Kubernetes cluster 🔐
-CA_CRT?=${HOME}/.minikube/ca.crt
-
-# See the "CA certificate" section of README.md 📖
+# See the "CA certificate" section of README.md 🔐📖
 CA_BUNDLE?=$(shell base64 -w0 $(CA_CRT))
 
 # The Kubernetes Namespace in which to deploy 📁
@@ -69,7 +81,7 @@ deploy_webhook: $(BUILD_DIR)
 
 # Get a certificate from the Kubernetes cluster CA
 $(BUILD_DIR)/$(NAME).key $(BUILD_DIR)/$(NAME).pem: $(BUILD_DIR)
-	sh scripts/get_cert.sh -n "$(NAME)" -N "$(NAMESPACE)" -d "$(BUILD_DIR)"
+	sh scripts/get_cert.sh -n "$(NAME)" -N "$(NAMESPACE)" -d "$(BUILD_DIR)" -k "$(KUBECTL)"
 
 tss-injector-svc: cmd/tss-injector-svc.go
 	go build $<
@@ -101,7 +113,7 @@ deploy: deploy_webhook test_image
 	sed -e "s| namespace: .*$$| namespace: $(NAMESPACE)|" \
 		-e "s|- port: [0-9]*.*$$|- port: $(SERVICE_PORT)|" \
 		-e "s|imagePullPolicy:.*$$|imagePullPolicy: $(IMAGE_PULL_POLICY)|" \
-		-e "s|image:.*$$|image: $(REGISTRY)/$(TEST_IMAGE_TAG)|" \
+		-e "s|image:.*$$|image: $(IMAGE_PULL_REGISTRY)/$(TEST_IMAGE_TAG)|" \
 		deployments/pod.yml >| $(BUILD_DIR)/pod.yml
 	$(KUBECTL) apply -f $(BUILD_DIR)/pod.yml
 
